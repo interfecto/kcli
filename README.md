@@ -43,6 +43,10 @@ Run the dashboard, KFS, wallet/Vortex, multisig, transaction and derivation regr
 npm test
 ```
 
+The tests that spawn `kcli` run against this checkout's freshly built `dist/` through a temporary
+PATH shim (`tests/run-tests.js`), not against a globally linked `kcli`. A single file:
+`npm test -- tests/multisig-finality.test.js`.
+
 Vortex V2 restricted local/mainnet administration is included in 1.6.0. Named
 encrypted wallets and detached-signing commands are described in the
 [CLI administrator guide](VORTEX_ADMINISTRATOR_GUIDE.md); the
