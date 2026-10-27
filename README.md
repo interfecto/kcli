@@ -138,7 +138,7 @@ kcli token-transfer <contractId> <to> <amount> --password-file ~/.kcli/wallet-pa
 kcli token-transfer <contractId> <to> <amount> --no-wait --nonce KAI= --password-file ~/.kcli/wallet-password.txt --yes
 ```
 
-Transfers any KCS-4 token from the encrypted wallet. The token contract is queried for symbol and decimals before building the transaction.
+Transfers any KCS-4 token from the encrypted wallet. The token contract is queried for name, symbol and decimals before building the transaction. For the configured KOIN and VHP contracts the amount is always encoded with 8 decimals; if the RPC reports a different value the command refuses to transfer. For other tokens the reported decimals must be readable and between 0 and 18, otherwise the command refuses. The transfer summary shows the amount in base units next to the decimal amount.
 
 #### Koinos Fund System Proposals and Votes
 

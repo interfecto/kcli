@@ -15,7 +15,7 @@ const signer = Signer.fromSeed('kcli disposable release transaction fixture; nev
 const recipient = Signer.fromSeed('kcli disposable release recipient; never fund').getAddress();
 const networks = {
   mainnet: { chainId: 'EiBZK_GGVP0H_fXVAM3j6EAuz3-B-l3ejxRSewi7qIBfSA==',
-    koin: '19GYjDBVXU7keLbYvMLazsGQn3GTWHjHkK', pob: '159myq5YUhhoVWu3wsHKHiJYKPKGUrGiyv' },
+    koin: '19GYjDBVXU7keLbYvMLazsGQn3GTWHjHkK', vhp: '12Y5vW6gk8GceH53YfRkRre2Rrcsgw7Naq', pob: '159myq5YUhhoVWu3wsHKHiJYKPKGUrGiyv' },
   testnet: { chainId: 'EiAIKVvm6-V2qmsmUvPJy09vCCLbtn9lHFpwrJbcTIEWRQ==',
     koin: '1FaSvLjQJsCJKq5ybmGsMMQs8RQYyVv8ju', pob: '1MAbK5pYkhp9yHnfhYamC3tfSLmVRTDjd9' },
 };
@@ -51,7 +51,8 @@ async function fixture(t, options = {}) {
       else if (rpc.method === 'chain.read_contract') {
         const [name, method] = Object.entries(tokenAbi.methods).find(([, method]) => method.entry_point === rpc.params.entry_point) || [];
         assert.ok(method, 'Unexpected read method');
-        const value = name === 'name' ? 'Synthetic release token' : name === 'symbol' ? 'SYN' : name === 'decimals' ? 8 : options.balance ?? '10000000000';
+        if (name === 'decimals' && options.failDecimals) throw new Error('Synthetic decimals read failure');
+        const value = name === 'name' ? 'Synthetic release token' : name === 'symbol' ? 'SYN' : name === 'decimals' ? (options.decimals ?? 8) : options.balance ?? '10000000000';
         result = { result: utils.encodeBase64url(await token.serialize({ value }, method.return)) };
       } else if (rpc.method === 'chain.submit_transaction') {
         const tx = rpc.params.transaction;
@@ -113,6 +114,62 @@ for (const command of ['transfer', 'token-transfer']) {
     assert.equal(f.submitted.length, 0);
   });
 }
+
+// A disposable address that is neither the configured KOIN nor VHP contract.
+const customToken = Signer.fromSeed('kcli disposable custom token contract; never fund').getAddress();
+
+for (const [label, args] of [
+  ['transfer', ['transfer', recipient, '1']],
+  ['token-transfer to the configured KOIN contract', ['token-transfer', networks.mainnet.koin, recipient, '1']],
+  ['token-transfer to the configured VHP contract', ['token-transfer', networks.mainnet.vhp, recipient, '1']],
+]) {
+  test(`${label} refuses RPC decimals that disagree with the fixed 8 before signing or submission`, async t => {
+    const f = await fixture(t, { decimals: 10 });
+    const output = await run(f, [...args, '--yes', '--no-wait']);
+    assert.match(output, /reports 10 decimals for the configured system token, expected 8/);
+    assert.equal(f.submitted.length, 0);
+    assert.equal(f.calls.filter(call => call.method === 'chain.get_account_nonce').length, 0);
+  });
+}
+
+test('transfer refuses an empty decimals result for the configured KOIN contract', async t => {
+  const f = await fixture(t, { decimals: 0 });
+  const output = await run(f, ['transfer', recipient, '1', '--yes', '--no-wait']);
+  assert.match(output, /reports 0 decimals for the configured system token, expected 8/);
+  assert.equal(f.submitted.length, 0);
+});
+
+test('transfer encodes 1 KOIN as exactly 100000000 base units and shows them in the summary', async t => {
+  const f = await fixture(t);
+  const output = await run(f, ['transfer', recipient, '1', '--dry-run']);
+  assert.match(output, /Amount: 1 SYN \(100000000 base units, 8 decimals\)/);
+  const encoded = output.match(/Args \(base64\): (\S+)/)[1];
+  const operation = await new Serializer(tokenAbi.koilib_types).deserialize(encoded, tokenAbi.methods.transfer.argument);
+  assert.equal(operation.value, '100000000');
+  assert.equal(f.submitted.length, 0);
+});
+
+test('token-transfer of a custom token uses its reported decimals, including zero', async t => {
+  const f = await fixture(t, { decimals: 0, balance: '10' });
+  const output = await run(f, ['token-transfer', customToken, recipient, '3', '--dry-run']);
+  assert.match(output, /Amount: 3 SYN \(3 base units, 0 decimals\)/);
+  const encoded = output.match(/Args \(base64\): (\S+)/)[1];
+  const operation = await new Serializer(tokenAbi.koilib_types).deserialize(encoded, tokenAbi.methods.transfer.argument);
+  assert.equal(operation.value, '3');
+  assert.equal(f.submitted.length, 0);
+});
+
+test('token-transfer of a custom token refuses unreadable or unsupported decimals', async t => {
+  const unreadable = await fixture(t, { failDecimals: true });
+  let output = await run(unreadable, ['token-transfer', customToken, recipient, '1', '--yes', '--no-wait']);
+  assert.match(output, /Could not read the token decimals/);
+  assert.equal(unreadable.submitted.length, 0);
+
+  const tooMany = await fixture(t, { decimals: 19 });
+  output = await run(tooMany, ['token-transfer', customToken, recipient, '1', '--yes', '--no-wait']);
+  assert.match(output, /unsupported decimals: 19/);
+  assert.equal(tooMany.submitted.length, 0);
+});
 
 test('transfer --no-wait submits one exact synthetic transaction and skips inclusion and balance readback', async t => {
   const f = await fixture(t);

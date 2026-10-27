@@ -20,6 +20,7 @@ import { registerVortexCommands } from './vortex-cli';
 import { registerMultisigCommands } from './multisig-cli';
 import { DashboardProvider, dashboardError, parseDashboardInteger } from './dashboard-rpc';
 import { DashboardProducerData, dashboardAge, dashboardValue, dashboardWholeUnits } from './dashboard-data';
+import { parseTokenAmount, resolveTokenDecimals } from './token-amount';
 
 const program = new Command();
 const CLI_VERSION = packageJson.version;
@@ -254,27 +255,6 @@ function isValidAddress(address: string): boolean {
   } catch (error) {
     return false;
   }
-}
-
-function parseTokenAmount(amount: string, decimals: number): bigint {
-  const trimmed = amount.trim();
-  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
-    throw new Error('Amount must be a positive decimal number.');
-  }
-
-  const [wholePart, fractionalPart = ''] = trimmed.split('.');
-  if (fractionalPart.length > decimals) {
-    throw new Error(`Amount has too many decimal places. This token supports ${decimals} decimals.`);
-  }
-
-  const paddedFractional = fractionalPart.padEnd(decimals, '0');
-  const raw = BigInt(wholePart || '0') * (BigInt(10) ** BigInt(decimals)) + BigInt(paddedFractional || '0');
-
-  if (raw <= BigInt(0)) {
-    throw new Error('Amount must be greater than zero.');
-  }
-
-  return raw;
 }
 
 function getReceiptErrorDetails(error: any): string[] {
@@ -896,10 +876,23 @@ async function executeTokenTransfer(
     ]);
 
     const isConfiguredKoin = contractId === context.contracts.koin;
-    const tokenName = nameResult?.result?.value || (isConfiguredKoin ? 'KOIN' : 'Token');
-    const tokenSymbol = symbolResult?.result?.value || (isConfiguredKoin ? 'KOIN' : 'TOKEN');
-    const decimals = Number(decimalsResult?.result?.value ?? 8);
-    const transferAmount = parseTokenAmount(amount, decimals);
+    const isConfiguredVhp = contractId === context.contracts.vhp;
+    const tokenName = nameResult?.result?.value || (isConfiguredKoin ? 'KOIN' : isConfiguredVhp ? 'VHP' : 'Token');
+    const tokenSymbol = symbolResult?.result?.value || (isConfiguredKoin ? 'KOIN' : isConfiguredVhp ? 'VHP' : 'TOKEN');
+    // KOIN and VHP always have 8 decimals; never let the RPC change how an
+    // amount is encoded. Custom tokens use the reported value after a sanity check.
+    // A successful read with an empty result is the protobuf default (0 decimals);
+    // only a failed read counts as unreadable.
+    const reportedDecimals = decimalsResult === undefined ? undefined : (decimalsResult.result?.value ?? 0);
+    let decimals: number;
+    let transferAmount: bigint;
+    try {
+      decimals = resolveTokenDecimals(reportedDecimals, { systemToken: isConfiguredKoin || isConfiguredVhp });
+      transferAmount = parseTokenAmount(amount, decimals);
+    } catch (error: any) {
+      console.log(`\n❌ ${error.message}`);
+      return;
+    }
     const currentBalance = balanceResult.result?.value ? BigInt(balanceResult.result.value) : BigInt(0);
     const currentFormatted = utils.formatUnits(currentBalance.toString(), decimals);
     const transferFormatted = utils.formatUnits(transferAmount.toString(), decimals);
@@ -951,7 +944,7 @@ async function executeTokenTransfer(
     console.log(`   Contract: ${contractId}`);
     console.log(`   From: ${wallet.address}`);
     console.log(`   To: ${to}`);
-    console.log(`   Amount: ${transferFormatted} ${tokenSymbol}`);
+    console.log(`   Amount: ${transferFormatted} ${tokenSymbol} (${transferAmount.toString()} base units, ${decimals} decimals)`);
     console.log(`   Current Balance: ${currentFormatted} ${tokenSymbol}`);
     console.log(`   Available Mana: ${manaFormatted}`);
 
@@ -1053,7 +1046,7 @@ program
 // Transfer any KCS-4 token
 program
   .command('token-transfer')
-  .description('Transfer any KCS-4 token to another address')
+  .description('Transfer any KCS-4 token to another address (KOIN/VHP use 8 decimals; other tokens need readable decimals from 0 to 18)')
   .argument('<contractId>', 'Token contract address')
   .argument('<to>', 'Recipient Koinos address')
   .argument('<amount>', 'Token amount to transfer')
